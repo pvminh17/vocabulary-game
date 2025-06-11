@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { GameState, VocabularyWord } from '../types';
+import { GameState, VocabularyWord, UserProgress } from '../types';
 import { VocabularyService } from '../services/VocabularyService';
+import { LearningService } from '../services/LearningService';
 import './VocabularyGame.css';
 
 const VocabularyGame: React.FC = () => {
@@ -15,11 +16,14 @@ const VocabularyGame: React.FC = () => {
     showAnswer: false,
     userGuess: '',
     isCorrect: null,
-    difficulty: 'all'
+    difficulty: 'all',
+    mode: 'practice'
   });
 
   const [gameMode, setGameMode] = useState<'typing' | 'multiple-choice'>('typing');
   const [multipleChoiceOptions, setMultipleChoiceOptions] = useState<string[]>([]);
+  const [userProgress, setUserProgress] = useState<UserProgress>(LearningService.getUserProgress());
+  const [learningPoolSize, setLearningPoolSize] = useState<number>(10);
 
   useEffect(() => {
     // Load best streak from localStorage
@@ -30,7 +34,22 @@ const VocabularyGame: React.FC = () => {
   }, []);
 
   const startGame = () => {
-    const newWord = VocabularyService.getRandomWord(gameState.difficulty);
+    let newWord: VocabularyWord | null;
+    
+    if (gameState.mode === 'learning') {
+      // Initialize learning session if needed
+      const progress = LearningService.initializeLearningSession(gameState.difficulty, learningPoolSize);
+      setUserProgress(progress);
+      newWord = LearningService.getNextLearningWord(gameState.difficulty);
+    } else {
+      newWord = VocabularyService.getRandomWord(gameState.difficulty);
+    }
+
+    if (!newWord) {
+      alert('No words available for learning! Try a different difficulty level or reset your progress.');
+      return;
+    }
+
     const options = gameMode === 'multiple-choice' ? 
       VocabularyService.generateMultipleChoiceOptions(newWord, gameState.difficulty) : [];
     
@@ -46,7 +65,20 @@ const VocabularyGame: React.FC = () => {
   };
 
   const nextQuestion = () => {
-    const newWord = VocabularyService.getRandomWord(gameState.difficulty);
+    let newWord: VocabularyWord | null;
+    
+    if (gameState.mode === 'learning') {
+      newWord = LearningService.getNextLearningWord(gameState.difficulty);
+    } else {
+      newWord = VocabularyService.getRandomWord(gameState.difficulty);
+    }
+
+    if (!newWord) {
+      alert('Congratulations! You have mastered all words in this difficulty level!');
+      resetGame();
+      return;
+    }
+
     const options = gameMode === 'multiple-choice' ? 
       VocabularyService.generateMultipleChoiceOptions(newWord, gameState.difficulty) : [];
     
@@ -68,9 +100,19 @@ const VocabularyGame: React.FC = () => {
     const newStreak = isCorrect ? gameState.currentStreak + 1 : 0;
     const newBestStreak = Math.max(gameState.bestStreak, newStreak);
 
-    // Save best streak to localStorage
-    if (newBestStreak > gameState.bestStreak) {
+    // Save best streak to localStorage for practice mode
+    if (newBestStreak > gameState.bestStreak && gameState.mode === 'practice') {
       localStorage.setItem('vocabularyBestStreak', newBestStreak.toString());
+    }
+
+    // Update learning progress if in learning mode
+    if (gameState.mode === 'learning') {
+      const updatedProgress = LearningService.recordAnswer(
+        gameState.currentWord.word, 
+        isCorrect, 
+        gameState.difficulty
+      );
+      setUserProgress(updatedProgress);
     }
 
     setGameState(prev => ({
@@ -100,6 +142,20 @@ const VocabularyGame: React.FC = () => {
     }));
   };
 
+  const resetLearningProgress = () => {
+    LearningService.resetLearningSession();
+    setUserProgress(LearningService.getUserProgress());
+    resetGame();
+  };
+
+  const updateLearningPoolSize = (newSize: number) => {
+    setLearningPoolSize(newSize);
+    if (gameState.mode === 'learning') {
+      const updatedProgress = LearningService.updateLearningPoolSize(newSize, gameState.difficulty);
+      setUserProgress(updatedProgress);
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !gameState.showAnswer) {
       submitAnswer();
@@ -121,13 +177,26 @@ const VocabularyGame: React.FC = () => {
   };
 
   if (!gameState.gameStarted) {
+    const learningStats = LearningService.getLearningStats(userProgress);
+    
     return (
       <div className="game-container">
         <div className="welcome-screen">
           <h1>🎯 Vocabulary Challenge</h1>
-          <p>Guess the word based on its definition!</p>
+          <p>Learn and master vocabulary words systematically!</p>
           
           <div className="game-settings">
+            <div className="setting-group">
+              <label>Game Mode:</label>
+              <select 
+                value={gameState.mode} 
+                onChange={(e) => setGameState(prev => ({ ...prev, mode: e.target.value as 'practice' | 'learning' }))}
+              >
+                <option value="practice">Practice Mode (Random Words)</option>
+                <option value="learning">Learning Mode (Systematic Learning)</option>
+              </select>
+            </div>
+
             <div className="setting-group">
               <label>Difficulty Level:</label>
               <select 
@@ -145,7 +214,7 @@ const VocabularyGame: React.FC = () => {
             </div>
             
             <div className="setting-group">
-              <label>Game Mode:</label>
+              <label>Answer Mode:</label>
               <select 
                 value={gameMode} 
                 onChange={(e) => setGameMode(e.target.value as 'typing' | 'multiple-choice')}
@@ -154,18 +223,63 @@ const VocabularyGame: React.FC = () => {
                 <option value="multiple-choice">Multiple Choice</option>
               </select>
             </div>
+
+            {gameState.mode === 'learning' && (
+              <div className="setting-group">
+                <label>Learning Pool Size (Words to learn at once):</label>
+                <select 
+                  value={learningPoolSize} 
+                  onChange={(e) => updateLearningPoolSize(parseInt(e.target.value))}
+                >
+                  <option value="5">5 words</option>
+                  <option value="10">10 words</option>
+                  <option value="15">15 words</option>
+                  <option value="20">20 words</option>
+                  <option value="25">25 words</option>
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="stats-preview">
-            <div className="stat">
-              <span className="stat-value">{gameState.bestStreak}</span>
-              <span className="stat-label">Best Streak</span>
-            </div>
+            {gameState.mode === 'practice' ? (
+              <div className="stat">
+                <span className="stat-value">{gameState.bestStreak}</span>
+                <span className="stat-label">Best Streak</span>
+              </div>
+            ) : (
+              <div className="learning-stats">
+                <div className="stat">
+                  <span className="stat-value">{learningStats.wordsInProgress}</span>
+                  <span className="stat-label">Words Learning</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-value">{learningStats.wordsMastered}</span>
+                  <span className="stat-label">Words Mastered</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-value">{Math.round(learningStats.sessionAccuracy)}%</span>
+                  <span className="stat-label">Session Accuracy</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-value">{learningStats.averageMasteryLevel.toFixed(1)}/5</span>
+                  <span className="stat-label">Avg. Mastery</span>
+                </div>
+              </div>
+            )}
           </div>
 
-          <button className="start-button" onClick={startGame}>
-            Start Game
-          </button>
+          <div className="button-group">
+            <button className="start-button" onClick={startGame}>
+              {gameState.mode === 'learning' ? 'Continue Learning' : 'Start Practice'}
+            </button>
+            
+            {gameState.mode === 'learning' && learningStats.wordsMastered > 0 && (
+              <button className="reset-learning-button" onClick={resetLearningProgress}>
+                Reset Learning Progress
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -175,18 +289,41 @@ const VocabularyGame: React.FC = () => {
     <div className="game-container">
       <div className="game-header">
         <div className="stats">
-          <div className="stat">
-            <span className="stat-value">{gameState.score}</span>
-            <span className="stat-label">Score</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value">{gameState.currentStreak}</span>
-            <span className="stat-label">Streak</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value">{gameState.totalQuestions > 0 ? Math.round((gameState.correctAnswers / gameState.totalQuestions) * 100) : 0}%</span>
-            <span className="stat-label">Accuracy</span>
-          </div>
+          {gameState.mode === 'learning' ? (
+            <>
+              <div className="stat">
+                <span className="stat-value">{LearningService.getLearningStats(userProgress).wordsInProgress}</span>
+                <span className="stat-label">Learning</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{LearningService.getLearningStats(userProgress).wordsMastered}</span>
+                <span className="stat-label">Mastered</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{gameState.currentStreak}</span>
+                <span className="stat-label">Streak</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{gameState.totalQuestions > 0 ? Math.round((gameState.correctAnswers / gameState.totalQuestions) * 100) : 0}%</span>
+                <span className="stat-label">Accuracy</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="stat">
+                <span className="stat-value">{gameState.score}</span>
+                <span className="stat-label">Score</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{gameState.currentStreak}</span>
+                <span className="stat-label">Streak</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{gameState.totalQuestions > 0 ? Math.round((gameState.correctAnswers / gameState.totalQuestions) * 100) : 0}%</span>
+                <span className="stat-label">Accuracy</span>
+              </div>
+            </>
+          )}
         </div>
         <button className="reset-button" onClick={resetGame}>New Game</button>
       </div>
@@ -202,6 +339,11 @@ const VocabularyGame: React.FC = () => {
               >
                 {gameState.currentWord.cefr.toUpperCase()}
               </span>
+              {gameState.mode === 'learning' && userProgress.wordProgress[gameState.currentWord.word] && (
+                <span className="mastery-level">
+                  Mastery: {userProgress.wordProgress[gameState.currentWord.word].masteryLevel}/5
+                </span>
+              )}
             </div>
             <div className="definition">
               <h2>Definition:</h2>
